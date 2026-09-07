@@ -1,0 +1,68 @@
+---
+title: "Assignment 1"
+author: "Conor Mangan"
+output: html_document
+---
+
+## Introduction
+
+This assignment demonstrates the use of R for importing,
+describing, transforming, and visualizing data. The dataset
+used in this assignment is the Palmer Penguins dataset.
+
+The dataset is available from the Palmer Station Long-Term
+Ecological Research program.
+
+## Importing the Data
+
+```{r}
+library(palmerpenguins)
+
+data(penguins)
+
+head(penguins)
+## Descriptive Statistics
+```
+summary(penguins[, c("bill_length_mm",
+                     "bill_depth_mm",
+                     "flipper_length_mm",
+                     "body_mass_g")])
+### Categorical Variables
+```{r}
+table(penguins$species)
+
+table(penguins$island)
+```
+
+
+```{r}
+table(penguins$sex)
+```
+penguins$body_mass_kg <- penguins$body_mass_g / 1000
+
+head(penguins[, c("body_mass_g", "body_mass_kg")])
+
+## Quantitative Variable Plot
+
+The following histogram displays the distribution of penguin body mass.
+
+```{r}
+hist(penguins$body_mass_g,
+     main = "Distribution of Penguin Body Mass",
+     xlab = "Body Mass (grams)")
+```
+
+## Scatterplot
+
+The following scatterplot examines the relationship between flipper length and body mass.
+
+```{r}
+plot(penguins$flipper_length_mm,
+     penguins$body_mass_g,
+     main = "Flipper Length vs. Body Mass",
+     xlab = "Flipper Length (mm)",
+     ylab = "Body Mass (g)")
+```
+```{r}
+
+```
