@@ -1,0 +1,468 @@
+---
+title: "Assignment 2: k-NN Classification"
+author: "Conor Mangan"
+date: "2026-09-30"
+output: html_document
+---
+
+# Introduction
+
+The purpose of this analysis is to use k-nearest neighbors (k-NN)
+classification to predict whether a Universal Bank customer will accept
+a personal loan offer. The dataset contains information on 5,000
+customers, including demographic characteristics, their relationship
+with the bank, and their response to a previous personal loan campaign.
+The response variable is Personal Loan, where a value of 1 indicates
+that the customer accepted the personal loan offer and a value of 0
+indicates that the customer did not accept the offer.
+
+```{r setup, message=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(caret)
+library(class)
+library(dplyr)
+
+set.seed(1)
+```
+
+# Load and Examine the Data
+
+The Universal Bank dataset is imported and examined below.
+
+```{r}
+bank <- read.csv("UniversalBank.csv")
+
+head(bank)
+dim(bank)
+str(bank)
+table(bank$Personal.Loan)
+```
+
+The dataset contains 5,000 customers. Of these customers, 480 accepted
+the previous personal loan offer, representing 9.6% of the observations.
+
+# Data Preparation
+
+The ID and ZIP Code variables are not used as predictors. Education has
+three categories, so it is transformed into three dummy variables before
+performing k-NN classification.
+
+```{r}
+bank$Education_1 <- ifelse(bank$Education == 1, 1, 0)
+bank$Education_2 <- ifelse(bank$Education == 2, 1, 0)
+bank$Education_3 <- ifelse(bank$Education == 3, 1, 0)
+
+bank_knn <- bank %>%
+  select(
+    Age,
+    Experience,
+    Income,
+    Family,
+    CCAvg,
+    Education_1,
+    Education_2,
+    Education_3,
+    Mortgage,
+    Securities.Account,
+    CD.Account,
+    Online,
+    CreditCard,
+    Personal.Loan
+  )
+
+head(bank_knn)
+```
+
+# Question 1
+
+The data are first partitioned into 60% training and 40% validation
+sets. A random seed is specified so that the partition can be
+reproduced.
+
+```{r}
+set.seed(1)
+
+train_index <- createDataPartition(
+  bank_knn$Personal.Loan,
+  p = 0.60,
+  list = FALSE
+)
+
+train_data <- bank_knn[train_index, ]
+valid_data <- bank_knn[-train_index, ]
+
+nrow(train_data)
+nrow(valid_data)
+```
+
+The predictor variables and response variable are separated.
+
+```{r}
+train_x <- train_data %>%
+  select(-Personal.Loan)
+
+valid_x <- valid_data %>%
+  select(-Personal.Loan)
+
+train_y <- train_data$Personal.Loan
+valid_y <- valid_data$Personal.Loan
+```
+
+Because k-NN relies on distances between observations, the predictor
+variables are standardized. The standardization parameters are
+estimated using only the training data and are then applied to the
+validation data.
+
+```{r}
+preprocess <- preProcess(
+  train_x,
+  method = c("center", "scale")
+)
+
+train_x_norm <- predict(preprocess, train_x)
+valid_x_norm <- predict(preprocess, valid_x)
+```
+
+The customer specified in the assignment is created below.
+
+```{r}
+new_customer <- data.frame(
+  Age = 40,
+  Experience = 10,
+  Income = 84,
+  Family = 2,
+  CCAvg = 2,
+  Education_1 = 0,
+  Education_2 = 1,
+  Education_3 = 0,
+  Mortgage = 0,
+  Securities.Account = 0,
+  CD.Account = 0,
+  Online = 1,
+  CreditCard = 1
+)
+
+new_customer_norm <- predict(preprocess, new_customer)
+```
+
+A k-NN model with k = 1 is used to classify the customer.
+
+```{r}
+set.seed(1)
+
+prediction_k1 <- knn(
+  train = train_x_norm,
+  test = new_customer_norm,
+  cl = train_y,
+  k = 1
+)
+
+prediction_k1
+```
+
+### Question 1 Interpretation
+
+Using k = 1, the customer was classified as **`r prediction_k1`**.
+A classification of 1 indicates that the customer is predicted to
+accept the personal loan offer, while a classification of 0 indicates
+that the customer is predicted not to accept the personal loan offer.
+
+# Question 2
+
+To determine an appropriate value of k, values from 1 through 30 are
+evaluated using the validation data. Validation accuracy is calculated
+for each value.
+
+```{r}
+k_values <- 1:30
+accuracy_values <- numeric(length(k_values))
+
+for (i in seq_along(k_values)) {
+
+  pred <- knn(
+    train = train_x_norm,
+    test = valid_x_norm,
+    cl = train_y,
+    k = k_values[i]
+  )
+
+  accuracy_values[i] <- mean(pred == valid_y)
+}
+
+results <- data.frame(
+  k = k_values,
+  Accuracy = accuracy_values
+)
+
+results
+```
+
+The value of k with the highest validation accuracy is identified.
+
+```{r}
+best_k <- results$k[which.max(results$Accuracy)]
+best_accuracy <- max(results$Accuracy)
+
+best_k
+best_accuracy
+```
+
+Validation accuracy across the different values of k is displayed
+graphically.
+
+```{r}
+plot(
+  results$k,
+  results$Accuracy,
+  type = "b",
+  xlab = "Number of Neighbors (k)",
+  ylab = "Validation Accuracy",
+  main = "Validation Accuracy for Different Values of k"
+)
+```
+
+### Question 2 Interpretation
+
+Very small values of k can lead to overfitting because predictions
+depend on only a small number of neighboring observations. Conversely,
+very large values of k can ignore useful local patterns in the
+predictor information. Based on the validation results, the selected
+value is **k = `r best_k`**, which produced a validation accuracy of
+**`r round(best_accuracy * 100, 2)`%**.
+
+# Question 3
+
+The selected value of k is now used to classify the observations in the
+validation set. The resulting confusion matrix is shown below.
+
+```{r}
+best_pred_valid <- knn(
+  train = train_x_norm,
+  test = valid_x_norm,
+  cl = train_y,
+  k = best_k
+)
+
+cm_validation <- confusionMatrix(
+  factor(best_pred_valid, levels = c(0, 1)),
+  factor(valid_y, levels = c(0, 1)),
+  positive = "1"
+)
+
+cm_validation
+```
+
+### Question 3 Interpretation
+
+The confusion matrix compares the predicted personal loan classifications
+with the actual outcomes in the validation data. Correct predictions
+appear along the diagonal of the matrix, while false positives and
+false negatives appear off the diagonal. Because only a relatively
+small percentage of customers accepted the previous personal loan
+offer, both overall accuracy and the model's ability to identify
+customers in the acceptance class should be considered when evaluating
+performance.
+
+# Question 4
+
+The customer from Question 1 is classified again using the selected
+value of k.
+
+```{r}
+prediction_best_k <- knn(
+  train = train_x_norm,
+  test = new_customer_norm,
+  cl = train_y,
+  k = best_k
+)
+
+prediction_best_k
+```
+
+### Question 4 Interpretation
+
+Using **k = `r best_k`**, the customer is classified as
+**`r prediction_best_k`**. A classification of 1 indicates predicted
+acceptance of the personal loan offer, while a classification of 0
+indicates predicted non-acceptance.
+
+# Question 5
+
+The data are now repartitioned into 50% training, 30% validation, and
+20% test sets. The same value of k selected previously is used for this
+analysis.
+
+```{r}
+set.seed(1)
+
+train_index2 <- createDataPartition(
+  bank_knn$Personal.Loan,
+  p = 0.50,
+  list = FALSE
+)
+
+train2 <- bank_knn[train_index2, ]
+remaining <- bank_knn[-train_index2, ]
+
+valid_index2 <- createDataPartition(
+  remaining$Personal.Loan,
+  p = 0.60,
+  list = FALSE
+)
+
+valid2 <- remaining[valid_index2, ]
+test2 <- remaining[-valid_index2, ]
+
+nrow(train2)
+nrow(valid2)
+nrow(test2)
+```
+
+The predictor and response variables are separated for each partition.
+
+```{r}
+train2_x <- train2 %>%
+  select(-Personal.Loan)
+
+valid2_x <- valid2 %>%
+  select(-Personal.Loan)
+
+test2_x <- test2 %>%
+  select(-Personal.Loan)
+
+train2_y <- train2$Personal.Loan
+valid2_y <- valid2$Personal.Loan
+test2_y <- test2$Personal.Loan
+```
+
+The predictors are standardized using the training data.
+
+```{r}
+preprocess2 <- preProcess(
+  train2_x,
+  method = c("center", "scale")
+)
+
+train2_norm <- predict(preprocess2, train2_x)
+valid2_norm <- predict(preprocess2, valid2_x)
+test2_norm <- predict(preprocess2, test2_x)
+```
+
+Predictions are generated for the training, validation, and test sets
+using the previously selected value of k.
+
+```{r}
+pred_train2 <- knn(
+  train = train2_norm,
+  test = train2_norm,
+  cl = train2_y,
+  k = best_k
+)
+
+pred_valid2 <- knn(
+  train = train2_norm,
+  test = valid2_norm,
+  cl = train2_y,
+  k = best_k
+)
+
+pred_test2 <- knn(
+  train = train2_norm,
+  test = test2_norm,
+  cl = train2_y,
+  k = best_k
+)
+```
+
+## Training Confusion Matrix
+
+```{r}
+cm_train <- confusionMatrix(
+  factor(pred_train2, levels = c(0, 1)),
+  factor(train2_y, levels = c(0, 1)),
+  positive = "1"
+)
+
+cm_train
+```
+
+## Validation Confusion Matrix
+
+```{r}
+cm_valid2 <- confusionMatrix(
+  factor(pred_valid2, levels = c(0, 1)),
+  factor(valid2_y, levels = c(0, 1)),
+  positive = "1"
+)
+
+cm_valid2
+```
+
+## Test Confusion Matrix
+
+```{r}
+cm_test <- confusionMatrix(
+  factor(pred_test2, levels = c(0, 1)),
+  factor(test2_y, levels = c(0, 1)),
+  positive = "1"
+)
+
+cm_test
+```
+
+The overall accuracy for each partition is extracted below to make the
+results easier to compare.
+
+```{r}
+train_accuracy <- cm_train$overall["Accuracy"]
+valid_accuracy <- cm_valid2$overall["Accuracy"]
+test_accuracy <- cm_test$overall["Accuracy"]
+
+accuracy_comparison <- data.frame(
+  Data_Set = c("Training", "Validation", "Test"),
+  Accuracy = c(
+    train_accuracy,
+    valid_accuracy,
+    test_accuracy
+  )
+)
+
+accuracy_comparison
+```
+
+### Question 5 Interpretation
+
+Using **k = `r best_k`**, the training set produced an accuracy of
+**`r round(train_accuracy * 100, 2)`%**, the validation set produced an
+accuracy of **`r round(valid_accuracy * 100, 2)`%**, and the test set
+produced an accuracy of **`r round(test_accuracy * 100, 2)`%**.
+
+Differences among the three confusion matrices are expected because
+each partition contains different observations. The training
+observations are directly involved in constructing the k-NN
+classifier, whereas the validation and test observations provide an
+evaluation of the model on observations that were not used to construct
+the classifier. Similar performance between the validation and test
+sets would indicate that the model generalizes reasonably well to new
+customers.
+
+The class imbalance should also be considered when interpreting these
+results. Only 480 of the 5,000 customers, or 9.6%, accepted the
+personal loan in the previous campaign. Therefore, overall accuracy
+alone does not provide a complete picture of model performance, and
+the false positives, false negatives, sensitivity, and specificity
+shown in the confusion matrices are also useful for evaluating the
+classifier.
+
+# Conclusion
+
+This analysis applied k-nearest neighbors classification to the
+Universal Bank customer data to predict personal loan acceptance.
+The model was initially evaluated using a 60% training and 40%
+validation partition, and different values of k were compared to select
+an appropriate number of neighbors. The selected model was then used
+to classify the specified customer and was further evaluated using
+training, validation, and test sets. The confusion matrices provide
+information about both correct and incorrect classifications and help
+evaluate how well the k-NN model may generalize to new customers.
