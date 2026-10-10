@@ -1,0 +1,155 @@
+---
+title: "Assignment 3: Naive Bayes Classification"
+author: "Conor Mangan"
+date: "2026-10-10"
+output: html_document
+---
+
+# Introduction
+
+This assignment uses Naive Bayes classification to examine whether a Universal Bank customer accepts a personal loan offer. The predictors are Online (active online banking user) and CC (bank-issued credit card holder), and the outcome is Loan (personal loan acceptance).
+
+# Setup and Data Preparation
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=TRUE, warning=FALSE, message=FALSE)
+library(e1071)
+```
+
+```{r data-preparation}
+bank <- read.csv("UniversalBank.csv", check.names=FALSE)
+stopifnot(all(c("Online", "CreditCard", "Personal Loan") %in% names(bank)))
+data <- data.frame(
+  Online = factor(bank[["Online"]], levels=c(0,1)),
+  CC = factor(bank[["CreditCard"]], levels=c(0,1)),
+  Loan = factor(bank[["Personal Loan"]], levels=c(0,1))
+)
+set.seed(123)
+train_index <- sample(seq_len(nrow(data)), size=floor(0.60*nrow(data)))
+train <- data[train_index, ]
+validation <- data[-train_index, ]
+cat("Training observations:", nrow(train), "\n")
+cat("Validation observations:", nrow(validation), "\n")
+```
+
+# A. Three-Way Frequency Table
+
+The table counts loan acceptance for each combination of credit-card ownership and online banking usage in the training sample.
+
+```{r part-a}
+pivot_A <- with(train, table(CC, Loan, Online))
+ftable(pivot_A, row.vars=c("CC","Loan"), col.vars="Online")
+```
+
+# B. Empirical Conditional Probability
+
+For customers with CC = 1 and Online = 1, calculate the fraction who accepted a loan.
+
+```{r part-b}
+accepted <- pivot_A["1","1","1"]
+total_group <- sum(pivot_A["1",,"1"])
+p_empirical <- accepted / total_group
+cat("Loan acceptors in group:", accepted, "\n")
+cat("Total customers in group:", total_group, "\n")
+cat("P(Loan=1 | CC=1, Online=1) from pivot:", round(p_empirical, 4), "\n")
+```
+
+# C. Two Additional Pivot Tables
+
+```{r part-c}
+loan_online <- with(train, table(Loan, Online))
+loan_cc <- with(train, table(Loan, CC))
+cat("Loan by Online:\n")
+print(loan_online)
+cat("\nLoan by CC:\n")
+print(loan_cc)
+```
+
+# D. Six Required Probabilities
+
+```{r part-d}
+p_cc1_loan1 <- loan_cc["1","1"] / sum(loan_cc["1",])
+p_online1_loan1 <- loan_online["1","1"] / sum(loan_online["1",])
+p_loan1 <- mean(train$Loan == "1")
+p_cc1_loan0 <- loan_cc["0","1"] / sum(loan_cc["0",])
+p_online1_loan0 <- loan_online["0","1"] / sum(loan_online["0",])
+p_loan0 <- mean(train$Loan == "0")
+probabilities <- data.frame(
+  Quantity=c("P(CC=1 | Loan=1)", "P(Online=1 | Loan=1)",
+             "P(Loan=1)", "P(CC=1 | Loan=0)",
+             "P(Online=1 | Loan=0)", "P(Loan=0)"),
+  Probability=c(p_cc1_loan1, p_online1_loan1, p_loan1,
+                p_cc1_loan0, p_online1_loan0, p_loan0)
+)
+knitr::kable(probabilities, digits=4)
+```
+
+# E. Manual Naive Bayes Probability
+
+Under the Naive Bayes conditional-independence assumption, the posterior probability is the normalized product of the class prior and the two predictor likelihoods.
+
+```{r part-e}
+score_yes <- p_cc1_loan1 * p_online1_loan1 * p_loan1
+score_no <- p_cc1_loan0 * p_online1_loan0 * p_loan0
+p_nb_manual <- score_yes / (score_yes + score_no)
+cat("Unnormalized score for Loan=1:", round(score_yes,6), "\n")
+cat("Unnormalized score for Loan=0:", round(score_no,6), "\n")
+cat("Naive Bayes posterior:", round(p_nb_manual,4), "\n")
+```
+
+# F. Compare the Two Estimates
+
+```{r part-f}
+comparison <- data.frame(
+  Method=c("Empirical pivot-table estimate", "Naive Bayes estimate"),
+  Probability=c(p_empirical, p_nb_manual)
+)
+knitr::kable(comparison, digits=4)
+cat("Absolute difference:", round(abs(p_empirical-p_nb_manual),4), "\n")
+```
+
+The pivot-table estimate is the observed loan-acceptance rate for customers with both characteristics in the training sample. It is the direct estimate of this particular conditional probability. Naive Bayes instead combines class-specific probabilities and assumes Online and CC are conditionally independent given Loan. Neither estimate is guaranteed to predict future customers more accurately. Validation performance provides a better basis for evaluating predictive accuracy.
+
+# G. Fit Naive Bayes and Inspect Predictions
+
+The relevant entries in the model's conditional probability tables are P(CC=1 | Loan=1), P(Online=1 | Loan=1), P(CC=1 | Loan=0), and P(Online=1 | Loan=0), together with the two class priors.
+
+```{r part-g}
+model <- naiveBayes(Loan ~ Online + CC, data=train, laplace=0)
+print(model)
+train_posteriors <- predict(model, newdata=train, type="raw")
+matching <- which(train$CC == "1" & train$Online == "1")
+cat("Posterior probability for matching training rows:\n")
+print(head(train_posteriors[matching, , drop=FALSE]))
+model_probability <- as.numeric(predict(
+  model,
+  newdata=data.frame(Online=factor("1",levels=c("0","1")),
+                     CC=factor("1",levels=c("0","1"))),
+  type="raw")[1,"1"])
+cat("Model P(Loan=1 | CC=1, Online=1):", round(model_probability,4), "\n")
+cat("Manual Naive Bayes estimate:", round(p_nb_manual,4), "\n")
+stopifnot(isTRUE(all.equal(model_probability, as.numeric(p_nb_manual), tolerance=1e-10)))
+```
+
+# Additional Validation Analysis
+
+This section evaluates the trained classifier on the 40% holdout sample. Since most customers do not accept the offer, accuracy should be interpreted alongside sensitivity and the confusion matrix.
+
+```{r validation}
+validation_predictions <- predict(model, newdata=validation, type="class")
+confusion <- table(Actual=validation$Loan, Predicted=validation_predictions)
+print(confusion)
+accuracy <- mean(validation_predictions == validation$Loan)
+cat("Validation accuracy:", round(accuracy,4), "\n")
+cat("Majority-class baseline accuracy:",
+    round(mean(validation$Loan == "0"),4), "\n")
+if (sum(validation$Loan == "1") > 0) {
+  sensitivity <- sum(validation_predictions == "1" & validation$Loan == "1") /
+    sum(validation$Loan == "1")
+  cat("Sensitivity for loan acceptance:", round(sensitivity,4), "\n")
+}
+```
+
+# Conclusion
+
+This analysis used the Online and CC predictors to estimate the probability that a Universal Bank customer accepts a personal loan offer. The empirical conditional probability and Naive Bayes posterior may differ because Naive Bayes assumes conditional independence of the predictors. The model output confirms the manually calculated Naive Bayes posterior. The validation results provide additional evidence about predictive performance on customers not used to fit the model, although performance is limited by using only two predictors.
