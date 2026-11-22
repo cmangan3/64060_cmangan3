@@ -1,0 +1,170 @@
+---
+title: "Assignment 5: Hierarchical Clustering of Breakfast Cereals"
+author: "Student Name"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=TRUE, warning=FALSE, message=FALSE)
+packages <- c("cluster", "knitr")
+missing_packages <- packages[!vapply(packages, requireNamespace, logical(1), quietly=TRUE)]
+if (length(missing_packages)) install.packages(missing_packages, repos="https://cloud.r-project.org")
+library(cluster)
+library(knitr)
+set.seed(123)
+```
+
+# 1. Data preparation
+
+```{r data}
+# Keep Cereals.csv in the same folder as this .Rmd file.
+cereals <- read.csv("Cereals.csv", stringsAsFactors=FALSE)
+cat("Original observations:", nrow(cereals), "\n")
+cat("Missing values:", sum(is.na(cereals)), "\n")
+clean <- na.omit(cereals)
+cat("Complete observations:", nrow(clean), "\n")
+# Exclude identifiers and categorical fields. Shelf is a display location,
+# not a nutritional measurement; exclude it from the main clustering.
+features <- c("calories", "protein", "fat", "sodium", "fiber", "carbo",
+              "sugars", "potass", "vitamins", "weight", "cups", "rating")
+X <- scale(clean[, features])
+rownames(X) <- clean$name
+stopifnot(!anyNA(X), all(is.finite(X)))
+D <- dist(X, method="euclidean")
+```
+
+# 2. Compare hierarchical linkage methods
+
+```{r linkage}
+methods <- c(single="single", complete="complete", average="average", ward="ward")
+models <- lapply(methods, function(m) agnes(X, metric="euclidean", method=m, stand=FALSE))
+coeff <- sapply(models, function(m) m$ac)
+ks <- 2:6
+sil <- sapply(models, function(model) {
+  tree <- as.hclust(model)
+  sapply(ks, function(k) mean(silhouette(cutree(tree, k), D)[, "sil_width"]))
+})
+rownames(sil) <- paste0("k=", ks)
+comparison <- data.frame(method=names(models), agglomerative_coefficient=round(coeff,3),
+                         best_k=ks[apply(sil, 2, which.max)],
+                         best_silhouette=round(apply(sil,2,max),3))
+kable(comparison, caption="Comparison of linkage methods")
+kable(round(sil,3), caption="Mean silhouette width by cluster count")
+# Select by largest average silhouette (rather than by coefficient alone).
+best_method <- names(which.max(apply(sil,2,max)))
+best_k <- ks[which.max(sil[,best_method])]
+cat("Selected linkage:", best_method, "\nSelected number of clusters:", best_k, "\n")
+```
+
+```{r dendrograms, fig.width=10, fig.height=8}
+par(mfrow=c(2,2), mar=c(4,4,3,1))
+for (method in names(models)) {
+  plot(as.hclust(models[[method]]), labels=FALSE,
+       main=paste("Linkage:", method), xlab="Cereals", sub="")
+}
+par(mfrow=c(1,1))
+```
+
+```{r chosen-tree, fig.width=10, fig.height=6}
+full_tree <- as.hclust(models[[best_method]])
+full_labels <- cutree(full_tree, k=best_k)
+plot(full_tree, labels=FALSE, main=paste("Selected:", best_method, "linkage"), xlab="Cereals", sub="")
+rect.hclust(full_tree, k=best_k, border=2:(best_k+1))
+```
+
+# 3. Cluster structure
+
+```{r structure}
+clean$cluster <- full_labels
+sizes <- as.data.frame(table(clean$cluster))
+colnames(sizes) <- c("Cluster", "Count")
+kable(sizes, caption="Cluster sizes")
+profiles <- aggregate(clean[, features], by=list(cluster=clean$cluster), FUN=mean)
+kable(round(profiles,2), caption="Cluster means in original units")
+cat("Overall silhouette width:", round(mean(silhouette(full_labels,D)[,"sil_width"]),3), "\n")
+for (i in sort(unique(full_labels))) {
+  cat("\nCluster", i, ":", paste(clean$name[clean$cluster==i], collapse=", "), "\n")
+}
+```
+
+# 4. Stability: train on partition A, assign partition B to centroids
+
+```{r stability}
+# Adjusted Rand Index: label-invariant agreement with full-data clusters.
+adjusted_rand <- function(a,b) {
+  tab <- table(a,b)
+  choose2 <- function(z) z*(z-1)/2
+  n <- sum(tab)
+  if (n < 2) return(NA_real_)
+  index <- sum(choose2(tab))
+  expected <- sum(choose2(rowSums(tab)))*sum(choose2(colSums(tab)))/choose2(n)
+  max_index <- (sum(choose2(rowSums(tab)))+sum(choose2(colSums(tab))))/2
+  if (abs(max_index-expected) < 1e-12) return(1)
+  (index-expected)/(max_index-expected)
+}
+centroid_assign <- function(A, group_A, B) {
+  centers <- do.call(rbind, lapply(sort(unique(group_A)), function(g) colMeans(A[group_A==g,,drop=FALSE])))
+  d2 <- sapply(seq_len(nrow(centers)), function(j)
+    rowSums(sweep(B, 2, centers[j,], "-")^2))
+  if (is.null(dim(d2))) d2 <- matrix(d2, ncol=1)
+  sort(unique(group_A))[max.col(-d2, ties.method="first")]
+}
+set.seed(123)
+reps <- 100
+stability <- replicate(reps, {
+  ia <- sort(sample(seq_len(nrow(X)), size=floor(.7*nrow(X))))
+  ib <- setdiff(seq_len(nrow(X)),ia)
+  A <- X[ia,,drop=FALSE]
+  B <- X[ib,,drop=FALSE]
+  model_A <- agnes(A, metric="euclidean", method=methods[[best_method]], stand=FALSE)
+  groups_A <- cutree(as.hclust(model_A), k=best_k)
+  assigned_B <- centroid_assign(A, groups_A, B)
+  adjusted_rand(assigned_B, full_labels[ib])
+})
+cat("Mean adjusted Rand index (100 random 70/30 splits):", round(mean(stability),3), "\n")
+cat("Median adjusted Rand index:", round(median(stability),3), "\n")
+cat("Range:", paste(round(range(stability),3),collapse=" to "), "\n")
+hist(stability, main="Stability across 100 partitions", xlab="Adjusted Rand index")
+```
+
+# 5. Healthy cereal analysis
+
+The original clustering describes similarities across nutrition, serving size, and consumer rating. For a school cafeteria, a separate nutrition-focused analysis is more relevant. Standardizing measurements prevents sodium (mg) from dominating fiber (g), but standardization does not itself define what is healthy. We therefore select nutritional features and use a directional health score for interpretation. This is an exploratory grouping, not a formal school nutrition certification.
+
+```{r healthy}
+health_features <- c("calories","protein","fat","sodium","fiber","sugars")
+H <- scale(clean[,health_features])
+rownames(H) <- clean$name
+# Higher = favorable on these chosen measures; equal standardized weights.
+# Calories and total fat are treated as lower-is-better simplifications.
+health_score <- -H[,"calories"] + H[,"protein"] - H[,"fat"] -
+                H[,"sodium"] + H[,"fiber"] - H[,"sugars"]
+health_tree <- as.hclust(agnes(H, metric="euclidean", method=methods[[best_method]], stand=FALSE))
+health_groups <- cutree(health_tree, k=best_k)
+health_summary <- aggregate(cbind(clean[,health_features], health_score=health_score),
+                            by=list(cluster=health_groups), FUN=mean)
+kable(round(health_summary,2), caption="Nutrition-only cluster profiles")
+healthy_cluster <- health_summary$cluster[which.max(health_summary$health_score)]
+healthy_cereals <- clean[health_groups==healthy_cluster,c("name",health_features)]
+healthy_cereals <- healthy_cereals[order(healthy_cereals$sugars, -healthy_cereals$fiber),]
+cat("Highest-scoring nutrition cluster:", healthy_cluster, "\n")
+kable(healthy_cereals, caption="Candidate cereals in the highest-scoring nutrition cluster")
+plot(health_tree, labels=FALSE, main="Nutrition-focused hierarchical clustering", xlab="Cereals", sub="")
+rect.hclust(health_tree,k=best_k,border=2:(best_k+1))
+```
+
+# 6. Interpretation and conclusions
+
+**Linkage method and number of clusters.** The selected method is `r best_method` linkage with `r best_k` clusters, based on the highest mean silhouette width across the four methods and candidate values of k from 2 through 6. Agglomerative coefficients and dendrograms provide additional context, but the coefficient alone is not a measure of business usefulness.
+
+**Cluster structure.** Compare the original-unit means in the cluster-profile table. Discuss which clusters have higher or lower sugar, fiber, sodium, protein, and ratings, and whether any clusters contain very few cereals. A silhouette width closer to 1 suggests better-separated groups; a value near zero suggests overlapping groups.
+
+**Stability.** The average adjusted Rand index across 100 held-out partitions is `r round(mean(stability),3)`. Values near 1 indicate strong agreement with the full-data clustering, while values near 0 suggest agreement near chance. The comparison is label-invariant, so arbitrary cluster numbers do not affect the score. This test evaluates agreement with the full-data solution, not external validity.
+
+**Healthy cereals and normalization.** The nutrition-only analysis identifies cluster `r healthy_cluster` as the highest-scoring group under the stated exploratory weighting. For Euclidean clustering, standardization is appropriate when measurements use different units. However, a cafeteria should also apply actual nutrition thresholds in original units (e.g., sugar and sodium limits, minimum fiber) and review serving sizes, allergies, added sugar, and applicable school meal rules before choosing a menu. A weighted or threshold-based approach can be preferable to treating every variable equally.
+
+**Limitations.** The selected cluster count is restricted to 2–6, the stability analysis uses a 70/30 random split, and the health score reflects explicitly chosen assumptions rather than official dietary guidelines. The data may not reflect current formulations.
